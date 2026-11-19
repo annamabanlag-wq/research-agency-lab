@@ -1,0 +1,26 @@
+# Simple multi-user auth for the Research Agency Lab
+# Change passwords before deploying!
+# Format used by streamlit-authenticator
+
+credentials:
+  usernames:
+    admin:
+      email: admin@lab.local
+      name: Lab Administrator
+      password: admin123          # CHANGE THIS
+    researcher:
+      email: researcher@lab.local
+      name: Research Scientist
+      password: research123       # CHANGE THIS
+    guest:
+      email: guest@lab.local
+      name: Guest User
+      password: guest123          # CHANGE THIS
+
+cookie:
+  expiry_days: 7
+  key: research_agency_lab_cookie_key_change_me
+  name: research_agency_lab_cookie
+
+preauthorized:
+  emails: []
