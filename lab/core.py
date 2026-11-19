@@ -1,97 +1,27 @@
 """
 Research Agency Lab — Core multi-agent system
-Hierarchical Research Director + specialist team + rich tools + memory support
+Hierarchical Research Director + specialist team + tools + persistent memory
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Optional, List
+from datetime import datetime
 
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process
 from crewai.llm import LLM
 
+from lab.tools import build_tools
+from lab.memory import get_lab_memory, LabMemory
+
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Tools factory
-# ---------------------------------------------------------------------------
-
-def build_tools(
-    enable_web_search: bool = True,
-    enable_arxiv: bool = True,
-    enable_code: bool = True,
-    enable_files: bool = True,
-    enable_scrape: bool = True,
-) -> list:
-    """Build the toolset based on availability and user toggles."""
-    tools = []
-
-    try:
-        from crewai_tools import (
-            SerperDevTool,
-            ScrapeWebsiteTool,
-            WebsiteSearchTool,
-            FileReadTool,
-            DirectoryReadTool,
-            ArxivPaperTool,
-            CodeInterpreterTool,
-            PDFSearchTool,
-        )
-    except ImportError as e:
-        print(f"⚠️  Some crewai-tools unavailable: {e}")
-        return tools
-
-    # Web search (Serper – best quality when key present)
-    if enable_web_search and os.getenv("SERPER_API_KEY"):
-        try:
-            tools.append(SerperDevTool())
-        except Exception as e:
-            print(f"Serper tool failed: {e}")
-
-    # Academic papers
-    if enable_arxiv:
-        try:
-            tools.append(ArxivPaperTool(download_pdfs=False, max_results=8))
-        except Exception:
-            pass
-
-    # Code execution (sandboxed by CrewAI)
-    if enable_code:
-        try:
-            tools.append(CodeInterpreterTool())
-        except Exception:
-            pass
-
-    # File / directory tools
-    if enable_files:
-        try:
-            tools.extend([FileReadTool(), DirectoryReadTool()])
-        except Exception:
-            pass
-
-    # Scraping & site search
-    if enable_scrape:
-        try:
-            tools.extend([ScrapeWebsiteTool(), WebsiteSearchTool()])
-        except Exception:
-            pass
-
-    return tools
-
-
-# ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
 
 def make_llm(model: str, temperature: float = 0.4) -> LLM:
     return LLM(model=model, temperature=temperature)
 
-
-# ---------------------------------------------------------------------------
-# Agents factory
-# ---------------------------------------------------------------------------
 
 def create_agents(
     model: str = "gpt-4o-mini",
@@ -110,7 +40,7 @@ def create_agents(
         goal=(
             "Lead the research laboratory: decompose complex questions, "
             "delegate to the right specialists, synthesize findings, and "
-            "deliver rigorous, high-quality final reports."
+            "deliver rigorous, high-quality final reports. Use lab memory when available."
         ),
         backstory=(
             "You are the Director of a high-performing research laboratory with a PhD "
@@ -184,24 +114,21 @@ def create_agents(
     }
 
 
-# ---------------------------------------------------------------------------
-# Main research runner
-# ---------------------------------------------------------------------------
-
 def run_research(
     user_request: str,
+    lab_id: str = "default",
     model: str = "gpt-4o-mini",
     manager_model: Optional[str] = None,
     temperature: float = 0.4,
     enable_web_search: bool = True,
     enable_arxiv: bool = True,
     enable_code: bool = True,
-    enable_memory: bool = False,
+    enable_memory: bool = True,
     verbose: bool = True,
 ) -> str:
     """
-    Launch the full hierarchical Research Agency Lab on a user request.
-    Returns the final report as a string.
+    Launch the hierarchical Research Agency Lab.
+    Results are optionally stored in the lab's persistent vector memory.
     """
 
     tools = build_tools(
@@ -209,6 +136,19 @@ def run_research(
         enable_arxiv=enable_arxiv,
         enable_code=enable_code,
     )
+
+    # Inject relevant memory context if available
+    memory_context = ""
+    lab_memory: Optional[LabMemory] = None
+    if enable_memory:
+        lab_memory = get_lab_memory(lab_id)
+        prior = lab_memory.query(user_request, n_results=4)
+        if prior:
+            snippets = "\n\n".join(
+                f"- {p['text'][:400]}..." if len(p['text']) > 400 else f"- {p['text']}"
+                for p in prior
+            )
+            memory_context = f"\n\nRELEVANT PRIOR LAB KNOWLEDGE:\n{snippets}\n"
 
     agents = create_agents(
         model=model,
@@ -218,11 +158,11 @@ def run_research(
     )
 
     main_task = Task(
-        description=f"""You are leading a research investigation for the Research Agency Lab.
+        description=f"""You are leading a research investigation inside Research Lab \"{lab_id}\".
 
 USER REQUEST:
 \"\"\"{user_request}\"\"\"
-
+{memory_context}
 As Research Director you must:
 1. Fully understand the research goal.
 2. Break the work into clear sub-tasks.
@@ -260,8 +200,22 @@ Final output requirements:
         process=Process.hierarchical,
         manager_agent=agents["director"],
         verbose=verbose,
-        memory=enable_memory,
+        memory=False,  # We handle persistence ourselves via Chroma
     )
 
     result = lab.kickoff()
-    return str(result)
+    result_str = str(result)
+
+    # Persist the new knowledge into the lab's vector store
+    if lab_memory and enable_memory:
+        lab_memory.add(
+            texts=[f"Research Request: {user_request}\n\nReport:\n{result_str[:8000]}"],
+            metadatas=[{
+                "type": "research_report",
+                "lab_id": lab_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "request": user_request[:200],
+            }],
+        )
+
+    return result_str
